@@ -236,7 +236,7 @@ where
                         discovery_order.push(vertex);
                         println!("DFS discovered: {:?}", vertex);
                     }
-                    Control::Continue
+                    Control::<()>::Continue
                 },
                 DfsEvent::TreeEdge(from, to) => {
                     if let (Some(from_vertex), Some(to_vertex)) =
