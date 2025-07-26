@@ -154,7 +154,7 @@ where
     P: GraphProvider<T>,
 {
     graph: &'a DynamicGraph<T, P>,
-    inner: petgraph::stable_graph::Neighbors<'a, (), petgraph::Directed>,
+    inner: petgraph::stable_graph::Neighbors<'a, ()>, // petgraph::Directed
     node_idx: NodeIndex,
     discovered: bool,
 }
