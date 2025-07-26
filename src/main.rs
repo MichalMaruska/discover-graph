@@ -9,7 +9,7 @@ pub trait GraphProvider<T> {
     fn get_neighbors(&mut self, vertex: &T) -> Vec<T>;
 
     /// Check if a vertex exists (optional validation)
-    fn vertex_exists(&mut self, vertex: &T) -> bool {
+    fn vertex_exists(&mut self, _vertex: &T) -> bool {
         true // Default implementation assumes all vertices exist
     }
 }
@@ -118,17 +118,19 @@ where
             depth_first_search(&self.graph, Some(start_node), |event| {
                 match event {
                     DfsEvent::Discover(node_idx, _) => {
-                        let vertex = &self.graph[node_idx];
+
+                        let vertex = &self.graph[node_idx].clone();
                         self.discovery_order.push(vertex.clone());
 
                         // Discover neighbors on-demand
+                        // modifies SELF
                         self.discover_vertex(vertex);
 
                         Control::<()>::Continue
                     },
                     DfsEvent::TreeEdge(_, target) => {
                         // Ensure target vertex is discovered
-                        let target_vertex = &self.graph[target];
+                        let target_vertex = &self.graph[target].clone();
                         self.discover_vertex(target_vertex);
                         Control::Continue
                     },
@@ -271,7 +273,7 @@ impl GraphProvider<i32> for SimpleGraphProvider {
         }
 
         (1..=self.branching_factor)
-            .map(|i| vertex * self.branching_factor as i32 + i)
+            .map(|i| vertex * self.branching_factor as i32 + i as i32)
             .collect()
     }
 
