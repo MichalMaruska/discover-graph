@@ -1,4 +1,4 @@
-use petgraph::graph::{NodeIndex};
+use petgraph::graph::{DiGraph, NodeIndex};
 use petgraph::visit::{depth_first_search, DfsEvent, Control, IntoNeighbors, GraphBase, Visitable};
 use petgraph::stable_graph::StableDiGraph;
 use std::collections::{HashMap, HashSet};
@@ -22,10 +22,10 @@ where
     T: Clone + Eq + Hash + std::fmt::Debug,
     P: GraphProvider<T>,
 {
-    graph: StableDiGraph<T, ()>,
-    vertex_to_node: HashMap<T, NodeIndex>,
-    discovered: HashSet<T>,
-    provider: RefCell<P>, // RefCell allows interior mutability
+    graph: RefCell<StableDiGraph<T, ()>>,
+    vertex_to_node: RefCell<HashMap<T, NodeIndex>>,
+    discovered: RefCell<HashSet<T>>,
+    provider: RefCell<P>,
 }
 
 impl<T, P> DynamicGraph<T, P>
@@ -35,20 +35,22 @@ where
 {
     pub fn new(provider: P) -> Self {
         Self {
-            graph: StableDiGraph::new(),
-            vertex_to_node: HashMap::new(),
-            discovered: HashSet::new(),
+            graph: RefCell::new(StableDiGraph::new()),
+            vertex_to_node: RefCell::new(HashMap::new()),
+            discovered: RefCell::new(HashSet::new()),
             provider: RefCell::new(provider),
         }
     }
 
     /// Get or create a node in the graph for the given vertex
-    fn get_or_create_node(&mut self, vertex: T) -> NodeIndex {
-        if let Some(&node_idx) = self.vertex_to_node.get(&vertex) {
+    fn get_or_create_node(&self, vertex: T) -> NodeIndex {
+        let mut vertex_to_node = self.vertex_to_node.borrow_mut();
+        if let Some(&node_idx) = vertex_to_node.get(&vertex) {
             node_idx
         } else {
-            let node_idx = self.graph.add_node(vertex.clone());
-            self.vertex_to_node.insert(vertex, node_idx);
+            let mut graph = self.graph.borrow_mut();
+            let node_idx = graph.add_node(vertex.clone());
+            vertex_to_node.insert(vertex, node_idx);
             node_idx
         }
     }
@@ -56,36 +58,43 @@ where
     /// Discover neighbors for a vertex and add them to the graph
     /// This is called by the IntoNeighbors implementation
     fn discover_if_needed(&self, node_idx: NodeIndex) {
-        let vertex = &self.graph[node_idx];
+        // Get the vertex from the node
+        let vertex = {
+            let graph = self.graph.borrow();
+            graph[node_idx].clone()
+        };
 
-        // Check if already discovered - we need to cast away const here
-        // because we're doing lazy discovery in what appears to be a const context
-        if self.discovered.contains(vertex) {
-            return;
+        // Check if already discovered
+        {
+            let discovered = self.discovered.borrow();
+            if discovered.contains(&vertex) {
+                return;
+            }
         }
 
-        // This is safe because we're using RefCell for interior mutability
-        let this = unsafe { &mut *(self as *const Self as *mut Self) };
+        // Get neighbors from provider
+        let neighbors = self.provider.borrow_mut().get_neighbors(&vertex);
 
-        let neighbors = this.provider.borrow_mut().get_neighbors(vertex);
-        this.discovered.insert(vertex.clone());
+        // Mark as discovered
+        self.discovered.borrow_mut().insert(vertex.clone());
 
         println!("Dynamically discovering vertex {:?} with {} neighbors", vertex, neighbors.len());
 
         // Add neighbors to graph
         for neighbor in neighbors {
-            if this.provider.borrow_mut().vertex_exists(&neighbor) {
-                let neighbor_node = this.get_or_create_node(neighbor.clone());
+            if self.provider.borrow_mut().vertex_exists(&neighbor) {
+                let neighbor_node = self.get_or_create_node(neighbor.clone());
 
                 // Add edge if it doesn't exist
-                if this.graph.find_edge(node_idx, neighbor_node).is_none() {
-                    this.graph.add_edge(node_idx, neighbor_node, ());
+                let mut graph = self.graph.borrow_mut();
+                if graph.find_edge(node_idx, neighbor_node).is_none() {
+                    graph.add_edge(node_idx, neighbor_node, ());
                 }
             }
         }
     }
 
-    pub fn add_start_vertex(&mut self, vertex: T) -> Option<NodeIndex> {
+    pub fn add_start_vertex(&self, vertex: T) -> Option<NodeIndex> {
         if self.provider.borrow_mut().vertex_exists(&vertex) {
             Some(self.get_or_create_node(vertex))
         } else {
@@ -93,20 +102,21 @@ where
         }
     }
 
-    pub fn get_vertex(&self, node_idx: NodeIndex) -> Option<&T> {
-        self.graph.node_weight(node_idx)
+    pub fn get_vertex(&self, node_idx: NodeIndex) -> Option<T> {
+        let graph = self.graph.borrow();
+        graph.node_weight(node_idx).cloned()
     }
 
-    pub fn get_graph(&self) -> &StableDiGraph<T, ()> {
-        &self.graph
+    pub fn get_graph_snapshot(&self) -> StableDiGraph<T, ()> {
+        self.graph.borrow().clone()
     }
 
     pub fn discovered_count(&self) -> usize {
-        self.discovered.len()
+        self.discovered.borrow().len()
     }
 
     pub fn edges_count(&self) -> usize {
-        self.graph.edge_count()
+        self.graph.borrow().edge_count()
     }
 }
 
@@ -129,11 +139,11 @@ where
     type Map = <StableDiGraph<T, ()> as Visitable>::Map;
 
     fn visit_map(&self) -> Self::Map {
-        self.graph.visit_map()
+        self.graph.borrow().visit_map()
     }
 
     fn reset_map(&self, map: &mut Self::Map) {
-        self.graph.reset_map(map)
+        self.graph.borrow().reset_map(map)
     }
 }
 
@@ -163,7 +173,7 @@ where
             self.discovered = true;
 
             // Get fresh iterator after discovery
-            self.inner = self.graph.graph.neighbors(self.node_idx);
+            self.inner = self.graph.graph.borrow().neighbors(self.node_idx);
         }
 
         self.inner.next()
@@ -181,7 +191,7 @@ where
     fn neighbors(self, node_idx: Self::NodeId) -> Self::Neighbors {
         DynamicNeighbors {
             graph: self,
-            inner: self.graph.neighbors(node_idx),
+            inner: self.graph.borrow().neighbors(node_idx),
             node_idx,
             discovered: false,
         }
@@ -223,7 +233,7 @@ where
             match event {
                 DfsEvent::Discover(node_idx, _) => {
                     if let Some(vertex) = self.dynamic_graph.get_vertex(node_idx) {
-                        discovery_order.push(vertex.clone());
+                        discovery_order.push(vertex);
                         println!("DFS discovered: {:?}", vertex);
                     }
                     Control::Continue
@@ -261,16 +271,36 @@ where
 
         while let Some(node_idx) = dfs.next(&self.dynamic_graph) {
             if let Some(vertex) = self.dynamic_graph.get_vertex(node_idx) {
-                discovery_order.push(vertex.clone());
+                discovery_order.push(vertex);
             }
         }
 
         discovery_order
     }
 
-    /// Get the discovered graph
-    pub fn get_graph(&self) -> &StableDiGraph<T, ()> {
-        self.dynamic_graph.get_graph()
+    /// Get the discovered graph - returns immutable reference to the underlying StableDiGraph
+    ///
+    /// This provides access to the petgraph data structure after discovery is complete.
+    /// You can use this for:
+    /// - Analyzing graph structure (node_count, edge_count, etc.)
+    /// - Running other petgraph algorithms on the discovered graph
+    /// - Accessing node weights and edge data
+    /// - Manual traversal using petgraph's iterators
+    ///
+    /// Note: This returns a snapshot of the StableDiGraph, not the DynamicGraph wrapper,
+    /// so it won't trigger further discovery if you traverse it.
+    pub fn get_graph(&self) -> StableDiGraph<T, ()> {
+        self.dynamic_graph.get_graph_snapshot()
+    }
+
+    /// Get access to the dynamic wrapper (for further discovery operations)
+    pub fn get_dynamic_graph(&self) -> &DynamicGraph<T, P> {
+        &self.dynamic_graph
+    }
+
+    /// Get a mutable reference to the dynamic wrapper
+    pub fn get_dynamic_graph_mut(&mut self) -> &mut DynamicGraph<T, P> {
+        &mut self.dynamic_graph
     }
 
     /// Get discovered vertices count
@@ -349,8 +379,44 @@ impl GraphProvider<String> for ExternalDataProvider {
     }
 }
 
+fn demonstrate_graph_access() {
+    println!("=== Understanding Graph Access Patterns ===");
+
+    let provider = ExternalDataProvider::new();
+    let mut discoverer = GraphDiscoverer::new(provider);
+
+    // 1. Perform discovery
+    let discovery_order = discoverer.dfs_discover("root".to_string());
+    println!("Discovered: {:?}", discovery_order);
+
+    // 2. Access the "snapshot" StableDiGraph (no further discovery)
+    let static_graph = discoverer.get_graph();
+    println!("\n--- Graph Snapshot Analysis ---");
+    println!("Nodes: {}, Edges: {}", static_graph.node_count(), static_graph.edge_count());
+
+    // You can use any petgraph algorithm on this:
+    for node_idx in static_graph.node_indices() {
+        if let Some(vertex) = static_graph.node_weight(node_idx) {
+            let neighbor_count = static_graph.neighbors(node_idx).count();
+            println!("Vertex {:?} has {} neighbors (static view)", vertex, neighbor_count);
+        }
+    }
+
+    // 3. Access the dynamic wrapper (can trigger more discovery)
+    let dynamic_graph = discoverer.get_dynamic_graph();
+    println!("\n--- Dynamic Graph Wrapper ---");
+    println!("Discovery calls made: {}", dynamic_graph.discovered_count());
+
+    // 4. The key difference:
+    println!("\n--- Key Difference ---");
+    println!("static_graph.neighbors() -> Uses existing edges only");
+    println!("dynamic_graph (via IntoNeighbors) -> May discover new neighbors");
+}
+
 fn main() {
-    println!("=== Dynamic Graph Discovery with IntoNeighbors ===");
+    demonstrate_graph_access();
+
+    println!("\n=== Dynamic Graph Discovery with IntoNeighbors ===");
 
     println!("\n--- Simple Numeric Graph ---");
     let provider = SimpleGraphProvider::new(3, 2);
