@@ -1,4 +1,4 @@
-use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::graph::{NodeIndex,DefaultIx};
 use petgraph::visit::{depth_first_search, DfsEvent, Control, IntoNeighbors, GraphBase, Visitable};
 use petgraph::stable_graph::StableDiGraph;
 use std::collections::{HashMap, HashSet};
@@ -154,7 +154,7 @@ where
     P: GraphProvider<T>,
 {
     graph: &'a DynamicGraph<T, P>,
-    inner: petgraph::stable_graph::Neighbors<'a, ()>, // petgraph::Directed
+    inner: petgraph::stable_graph::WalkNeighbors<DefaultIx>, // petgraph::Directed  Neighbors
     node_idx: NodeIndex,
     discovered: bool,
 }
@@ -171,12 +171,9 @@ where
         if !self.discovered {
             self.graph.discover_if_needed(self.node_idx);
             self.discovered = true;
-
-            // Get fresh iterator after discovery
-            self.inner = self.graph.graph.borrow().neighbors(self.node_idx);
         }
 
-        self.inner.next()
+        self.inner.next_node(&*self.graph.graph.borrow()) // wtf!
     }
 }
 
@@ -191,7 +188,7 @@ where
     fn neighbors(self, node_idx: Self::NodeId) -> Self::Neighbors {
         DynamicNeighbors {
             graph: self,
-            inner: self.graph.borrow().neighbors(node_idx),
+            inner: self.graph.borrow().neighbors(node_idx).detach(),
             node_idx,
             discovered: false,
         }
