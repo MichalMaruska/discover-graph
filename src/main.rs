@@ -333,7 +333,7 @@ impl GraphProvider<i32> for SimpleGraphProvider {
         }
 
         (1..=self.branching_factor)
-            .map(|i| vertex * self.branching_factor as i32 + i)
+            .map(|i| vertex * self.branching_factor as i32 + i as i32)
             .collect()
     }
 
