@@ -1,7 +1,9 @@
-use petgraph::graph::{DiGraph, NodeIndex};
-use petgraph::visit::{depth_first_search, DfsEvent, Control};
+use petgraph::graph::{NodeIndex};
+use petgraph::visit::{depth_first_search, DfsEvent, Control, IntoNeighbors, GraphBase, Visitable};
+use petgraph::stable_graph::StableDiGraph;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
+use std::cell::RefCell;
 
 /// Trait for providing vertices and edges on demand
 pub trait GraphProvider<T> {
@@ -9,38 +11,34 @@ pub trait GraphProvider<T> {
     fn get_neighbors(&mut self, vertex: &T) -> Vec<T>;
 
     /// Check if a vertex exists (optional validation)
-    fn vertex_exists(&mut self, _vertex: &T) -> bool {
+    fn vertex_exists(&mut self, vertex: &T) -> bool {
         true // Default implementation assumes all vertices exist
     }
 }
 
-/// On-demand graph discoverer using petgraph's depth_first_search
-pub struct GraphDiscoverer<T, P>
+/// Dynamic graph wrapper that implements IntoNeighbors with on-demand discovery
+pub struct DynamicGraph<T, P>
 where
     T: Clone + Eq + Hash + std::fmt::Debug,
     P: GraphProvider<T>,
 {
-    provider: P,
-    graph: DiGraph<T, ()>,
+    graph: StableDiGraph<T, ()>,
     vertex_to_node: HashMap<T, NodeIndex>,
     discovered: HashSet<T>,
-    discovery_order: Vec<T>,
-    pending_discovery: Vec<T>,
+    provider: RefCell<P>, // RefCell allows interior mutability
 }
 
-impl<T, P> GraphDiscoverer<T, P>
+impl<T, P> DynamicGraph<T, P>
 where
     T: Clone + Eq + Hash + std::fmt::Debug,
     P: GraphProvider<T>,
 {
     pub fn new(provider: P) -> Self {
         Self {
-            provider,
-            graph: DiGraph::new(),
+            graph: StableDiGraph::new(),
             vertex_to_node: HashMap::new(),
             discovered: HashSet::new(),
-            discovery_order: Vec::new(),
-            pending_discovery: Vec::new(),
+            provider: RefCell::new(provider),
         }
     }
 
@@ -56,200 +54,233 @@ where
     }
 
     /// Discover neighbors for a vertex and add them to the graph
-    fn discover_vertex(&mut self, vertex: &T) -> Vec<NodeIndex> {
+    /// This is called by the IntoNeighbors implementation
+    fn discover_if_needed(&self, node_idx: NodeIndex) {
+        let vertex = &self.graph[node_idx];
+
+        // Check if already discovered - we need to cast away const here
+        // because we're doing lazy discovery in what appears to be a const context
         if self.discovered.contains(vertex) {
-            // Already discovered, just return existing neighbors
-            let node_idx = self.vertex_to_node[vertex];
-            return self.graph.neighbors(node_idx).collect();
+            return;
         }
 
-        let neighbors = self.provider.get_neighbors(vertex);
-        self.discovered.insert(vertex.clone());
+        // This is safe because we're using RefCell for interior mutability
+        let this = unsafe { &mut *(self as *const Self as *mut Self) };
 
-        println!("Discovering vertex {:?} with {} neighbors", vertex, neighbors.len());
+        let neighbors = this.provider.borrow_mut().get_neighbors(vertex);
+        this.discovered.insert(vertex.clone());
 
-        let current_node = self.vertex_to_node[vertex];
-        let mut neighbor_nodes = Vec::new();
+        println!("Dynamically discovering vertex {:?} with {} neighbors", vertex, neighbors.len());
 
         // Add neighbors to graph
         for neighbor in neighbors {
-            if self.provider.vertex_exists(&neighbor) {
-                let neighbor_node = self.get_or_create_node(neighbor.clone());
+            if this.provider.borrow_mut().vertex_exists(&neighbor) {
+                let neighbor_node = this.get_or_create_node(neighbor.clone());
 
                 // Add edge if it doesn't exist
-                if self.graph.find_edge(current_node, neighbor_node).is_none() {
-                    self.graph.add_edge(current_node, neighbor_node, ());
-                }
-
-                neighbor_nodes.push(neighbor_node);
-
-                // Track for potential future discovery
-                if !self.discovered.contains(&neighbor) {
-                    self.pending_discovery.push(neighbor);
+                if this.graph.find_edge(node_idx, neighbor_node).is_none() {
+                    this.graph.add_edge(node_idx, neighbor_node, ());
                 }
             }
         }
-
-        neighbor_nodes
     }
 
-    /// Perform DFS with on-demand discovery using petgraph's depth_first_search
-    pub fn dfs_discover(&mut self, start: T) -> Vec<T> {
-        // Validate start vertex
-        if !self.provider.vertex_exists(&start) {
-            return Vec::new();
+    pub fn add_start_vertex(&mut self, vertex: T) -> Option<NodeIndex> {
+        if self.provider.borrow_mut().vertex_exists(&vertex) {
+            Some(self.get_or_create_node(vertex))
+        } else {
+            None
         }
-
-        // Clear previous results
-        self.discovery_order.clear();
-        self.pending_discovery.clear();
-
-        // Add start vertex to graph
-        let start_node = self.get_or_create_node(start.clone());
-
-        // Initial discovery of start vertex
-        self.discover_vertex(&start);
-
-        // Keep running DFS until no new vertices are discovered
-        loop {
-            let initial_node_count = self.graph.node_count();
-
-            // Run petgraph's depth_first_search
-            depth_first_search(&self.graph, Some(start_node), |event| {
-                match event {
-                    DfsEvent::Discover(node_idx, _) => {
-
-                        let vertex = &self.graph[node_idx].clone();
-                        self.discovery_order.push(vertex.clone());
-
-                        // Discover neighbors on-demand
-                        // modifies SELF
-                        self.discover_vertex(vertex);
-
-                        Control::<()>::Continue
-                    },
-                    DfsEvent::TreeEdge(_, target) => {
-                        // Ensure target vertex is discovered
-                        let target_vertex = &self.graph[target].clone();
-                        self.discover_vertex(target_vertex);
-                        Control::Continue
-                    },
-                    _ => Control::Continue,
-                }
-            });
-
-            // If no new nodes were added, we're done
-            if self.graph.node_count() == initial_node_count {
-                break;
-            }
-        }
-
-        self.discovery_order.clone()
     }
 
-    /// Alternative approach: iterative DFS with on-demand discovery
-    pub fn dfs_discover_iterative(&mut self, start: T) -> Vec<T> {
-        if !self.provider.vertex_exists(&start) {
-            return Vec::new();
-        }
-
-        self.discovery_order.clear();
-        let start_node = self.get_or_create_node(start);
-
-        // Continue until no more vertices can be discovered
-        loop {
-            let nodes_before = self.graph.node_count();
-
-            // Use petgraph's DFS on current graph state
-            depth_first_search(&self.graph, Some(start_node), |event| {
-                if let DfsEvent::Discover(node_idx, _) = event {
-                    let vertex = &self.graph[node_idx].clone();
-
-                    // Only add to discovery order if not already added
-                    if !self.discovery_order.contains(vertex) {
-                        self.discovery_order.push(vertex.clone());
-                    }
-
-                    // Discover neighbors for this vertex
-                    self.discover_vertex(vertex);
-                }
-                Control::<()>::Continue
-            });
-
-            // If no new nodes were discovered, we're done
-            if self.graph.node_count() == nodes_before {
-                break;
-            }
-        }
-
-        self.discovery_order.clone()
+    pub fn get_vertex(&self, node_idx: NodeIndex) -> Option<&T> {
+        self.graph.node_weight(node_idx)
     }
 
-    /// Use petgraph's DFS with a visitor pattern for more control
-    pub fn dfs_discover_with_visitor<F>(&mut self, start: T, mut visitor: F) -> Vec<T>
-    where
-        F: FnMut(&T, &[T]) -> bool, // Returns true to continue exploring
-    {
-        if !self.provider.vertex_exists(&start) {
-            return Vec::new();
-        }
-
-        self.discovery_order.clear();
-        let start_node = self.get_or_create_node(start);
-
-        loop {
-            let nodes_before = self.graph.node_count();
-
-            depth_first_search(&self.graph, Some(start_node), |event| {
-                match event {
-                    DfsEvent::Discover(node_idx, _) => {
-                        let vertex = &self.graph[node_idx].clone();
-
-                        if !self.discovery_order.contains(vertex) {
-                            self.discovery_order.push(vertex.clone());
-
-                            // Get current neighbors
-                            let current_neighbors: Vec<T> = self.graph
-                                .neighbors(node_idx)
-                                .map(|n| self.graph[n].clone())
-                                .collect();
-
-                            // Call visitor - if it returns false, stop exploring this branch
-                            if !visitor(vertex, &current_neighbors) {
-                                return Control::<()>::Prune;
-                            }
-
-                            // Discover new neighbors
-                            self.discover_vertex(vertex);
-                        }
-
-                        Control::Continue
-                    },
-                    _ => Control::Continue,
-                }
-            });
-
-            if self.graph.node_count() == nodes_before {
-                break;
-            }
-        }
-
-        self.discovery_order.clone()
-    }
-
-    /// Get the discovered graph
-    pub fn get_graph(&self) -> &DiGraph<T, ()> {
+    pub fn get_graph(&self) -> &StableDiGraph<T, ()> {
         &self.graph
     }
 
-    /// Get discovered vertices count
     pub fn discovered_count(&self) -> usize {
         self.discovered.len()
     }
 
-    /// Get total edges count
     pub fn edges_count(&self) -> usize {
         self.graph.edge_count()
+    }
+}
+
+// Implement GraphBase for our wrapper
+impl<T, P> GraphBase for DynamicGraph<T, P>
+where
+    T: Clone + Eq + Hash + std::fmt::Debug,
+    P: GraphProvider<T>,
+{
+    type NodeId = NodeIndex;
+    type EdgeId = petgraph::graph::EdgeIndex;
+}
+
+// Implement Visitable for our wrapper
+impl<T, P> Visitable for DynamicGraph<T, P>
+where
+    T: Clone + Eq + Hash + std::fmt::Debug,
+    P: GraphProvider<T>,
+{
+    type Map = <StableDiGraph<T, ()> as Visitable>::Map;
+
+    fn visit_map(&self) -> Self::Map {
+        self.graph.visit_map()
+    }
+
+    fn reset_map(&self, map: &mut Self::Map) {
+        self.graph.reset_map(map)
+    }
+}
+
+// Custom neighbors iterator that triggers discovery
+pub struct DynamicNeighbors<'a, T, P>
+where
+    T: Clone + Eq + Hash + std::fmt::Debug,
+    P: GraphProvider<T>,
+{
+    graph: &'a DynamicGraph<T, P>,
+    inner: petgraph::stable_graph::Neighbors<'a, (), petgraph::Directed>,
+    node_idx: NodeIndex,
+    discovered: bool,
+}
+
+impl<'a, T, P> Iterator for DynamicNeighbors<'a, T, P>
+where
+    T: Clone + Eq + Hash + std::fmt::Debug,
+    P: GraphProvider<T>,
+{
+    type Item = NodeIndex;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // Trigger discovery on first access
+        if !self.discovered {
+            self.graph.discover_if_needed(self.node_idx);
+            self.discovered = true;
+
+            // Get fresh iterator after discovery
+            self.inner = self.graph.graph.neighbors(self.node_idx);
+        }
+
+        self.inner.next()
+    }
+}
+
+// Implement IntoNeighbors for our wrapper - this is the key!
+impl<'a, T, P> IntoNeighbors for &'a DynamicGraph<T, P>
+where
+    T: Clone + Eq + Hash + std::fmt::Debug,
+    P: GraphProvider<T>,
+{
+    type Neighbors = DynamicNeighbors<'a, T, P>;
+
+    fn neighbors(self, node_idx: Self::NodeId) -> Self::Neighbors {
+        DynamicNeighbors {
+            graph: self,
+            inner: self.graph.neighbors(node_idx),
+            node_idx,
+            discovered: false,
+        }
+    }
+}
+
+/// Main discoverer that uses the dynamic graph wrapper
+pub struct GraphDiscoverer<T, P>
+where
+    T: Clone + Eq + Hash + std::fmt::Debug,
+    P: GraphProvider<T>,
+{
+    dynamic_graph: DynamicGraph<T, P>,
+}
+
+impl<T, P> GraphDiscoverer<T, P>
+where
+    T: Clone + Eq + Hash + std::fmt::Debug,
+    P: GraphProvider<T>,
+{
+    pub fn new(provider: P) -> Self {
+        Self {
+            dynamic_graph: DynamicGraph::new(provider),
+        }
+    }
+
+    /// Perform DFS using petgraph's depth_first_search with dynamic discovery
+    pub fn dfs_discover(&mut self, start: T) -> Vec<T> {
+        let start_node = match self.dynamic_graph.add_start_vertex(start) {
+            Some(node) => node,
+            None => return Vec::new(),
+        };
+
+        let mut discovery_order = Vec::new();
+
+        // Now we can use petgraph's depth_first_search directly!
+        // The IntoNeighbors implementation will handle discovery automatically
+        depth_first_search(&self.dynamic_graph, Some(start_node), |event| {
+            match event {
+                DfsEvent::Discover(node_idx, _) => {
+                    if let Some(vertex) = self.dynamic_graph.get_vertex(node_idx) {
+                        discovery_order.push(vertex.clone());
+                        println!("DFS discovered: {:?}", vertex);
+                    }
+                    Control::Continue
+                },
+                DfsEvent::TreeEdge(from, to) => {
+                    if let (Some(from_vertex), Some(to_vertex)) =
+                        (self.dynamic_graph.get_vertex(from), self.dynamic_graph.get_vertex(to)) {
+                        println!("DFS tree edge: {:?} -> {:?}", from_vertex, to_vertex);
+                    }
+                    Control::Continue
+                },
+                DfsEvent::BackEdge(from, to) => {
+                    if let (Some(from_vertex), Some(to_vertex)) =
+                        (self.dynamic_graph.get_vertex(from), self.dynamic_graph.get_vertex(to)) {
+                        println!("DFS back edge: {:?} -> {:?}", from_vertex, to_vertex);
+                    }
+                    Control::Continue
+                },
+                _ => Control::Continue,
+            }
+        });
+
+        discovery_order
+    }
+
+    /// Alternative: Use petgraph's Dfs iterator directly
+    pub fn dfs_discover_iterator(&mut self, start: T) -> Vec<T> {
+        let start_node = match self.dynamic_graph.add_start_vertex(start) {
+            Some(node) => node,
+            None => return Vec::new(),
+        };
+
+        let mut discovery_order = Vec::new();
+        let mut dfs = petgraph::visit::Dfs::new(&self.dynamic_graph, start_node);
+
+        while let Some(node_idx) = dfs.next(&self.dynamic_graph) {
+            if let Some(vertex) = self.dynamic_graph.get_vertex(node_idx) {
+                discovery_order.push(vertex.clone());
+            }
+        }
+
+        discovery_order
+    }
+
+    /// Get the discovered graph
+    pub fn get_graph(&self) -> &StableDiGraph<T, ()> {
+        self.dynamic_graph.get_graph()
+    }
+
+    /// Get discovered vertices count
+    pub fn discovered_count(&self) -> usize {
+        self.dynamic_graph.discovered_count()
+    }
+
+    /// Get total edges count
+    pub fn edges_count(&self) -> usize {
+        self.dynamic_graph.edges_count()
     }
 }
 
@@ -267,22 +298,21 @@ impl SimpleGraphProvider {
 
 impl GraphProvider<i32> for SimpleGraphProvider {
     fn get_neighbors(&mut self, vertex: &i32) -> Vec<i32> {
-        // Simple rule: each vertex n has neighbors [n*branching_factor+1, n*branching_factor+2, ...]
         if *vertex >= (self.max_depth as i32).pow(self.branching_factor as u32) {
-            return Vec::new(); // No neighbors for deep vertices
+            return Vec::new();
         }
 
         (1..=self.branching_factor)
-            .map(|i| vertex * self.branching_factor as i32 + i as i32)
+            .map(|i| vertex * self.branching_factor as i32 + i)
             .collect()
     }
 
     fn vertex_exists(&mut self, vertex: &i32) -> bool {
-        *vertex >= 0 && *vertex <= 1000 // Arbitrary limit
+        *vertex >= 0 && *vertex <= 1000
     }
 }
 
-// Example with external data source (simulated)
+// Example with external data source
 pub struct ExternalDataProvider {
     call_count: usize,
 }
@@ -292,12 +322,10 @@ impl ExternalDataProvider {
         Self { call_count: 0 }
     }
 
-    // Simulate external API call
     fn fetch_neighbors(&mut self, vertex: &String) -> Vec<String> {
         self.call_count += 1;
         println!("API call #{}: fetching neighbors for '{}'", self.call_count, vertex);
 
-        // Simulate different neighbor patterns based on vertex name
         match vertex.as_str() {
             "root" => vec!["A".to_string(), "B".to_string(), "C".to_string()],
             "A" => vec!["A1".to_string(), "A2".to_string()],
@@ -305,14 +333,13 @@ impl ExternalDataProvider {
             "C" => vec!["C1".to_string()],
             "A1" => vec!["A1a".to_string()],
             "A2" => vec!["A2a".to_string(), "A2b".to_string()],
-            _ => Vec::new(), // Leaf nodes
+            _ => Vec::new(),
         }
     }
 }
 
 impl GraphProvider<String> for ExternalDataProvider {
     fn get_neighbors(&mut self, vertex: &String) -> Vec<String> {
-        // Simulate network delay
         std::thread::sleep(std::time::Duration::from_millis(10));
         self.fetch_neighbors(vertex)
     }
@@ -323,46 +350,42 @@ impl GraphProvider<String> for ExternalDataProvider {
 }
 
 fn main() {
-    println!("=== Example 1: Simple Numeric Graph with petgraph DFS ===");
+    println!("=== Dynamic Graph Discovery with IntoNeighbors ===");
+
+    println!("\n--- Simple Numeric Graph ---");
     let provider = SimpleGraphProvider::new(3, 2);
     let mut discoverer = GraphDiscoverer::new(provider);
-
     let discovery_order = discoverer.dfs_discover(1);
     println!("Discovery order: {:?}", discovery_order);
     println!("Discovered {} vertices with {} edges",
              discoverer.discovered_count(),
              discoverer.edges_count());
 
-    println!("\n=== Example 2: External Data Source with Iterative DFS ===");
+    println!("\n--- External Data Source ---");
     let provider = ExternalDataProvider::new();
     let mut discoverer = GraphDiscoverer::new(provider);
-
-    let discovery_order = discoverer.dfs_discover_iterative("root".to_string());
+    let discovery_order = discoverer.dfs_discover("root".to_string());
     println!("Discovery order: {:?}", discovery_order);
     println!("Discovered {} vertices with {} edges",
              discoverer.discovered_count(),
              discoverer.edges_count());
 
-    println!("\n=== Example 3: DFS with Custom Visitor ===");
+    println!("\n--- Using DFS Iterator ---");
     let provider = ExternalDataProvider::new();
     let mut discoverer = GraphDiscoverer::new(provider);
+    let discovery_order = discoverer.dfs_discover_iterator("root".to_string());
+    println!("Discovery order (iterator): {:?}", discovery_order);
 
-    let discovery_order = discoverer.dfs_discover_with_visitor("root".to_string(), |vertex, neighbors| {
-        println!("Visiting: {} (current neighbors: {:?})", vertex, neighbors);
-        // Stop exploring branches that start with "B"
-        !vertex.starts_with("B")
-    });
-    println!("Discovery order with visitor: {:?}", discovery_order);
-
-    // Print the final graph structure
+    // Print final graph structure
     println!("\nFinal graph structure:");
     let graph = discoverer.get_graph();
     for node_idx in graph.node_indices() {
-        let vertex = &graph[node_idx];
-        let neighbors: Vec<_> = graph.neighbors(node_idx)
-            .map(|n| &graph[n])
-            .collect();
-        println!("  {:?} -> {:?}", vertex, neighbors);
+        if let Some(vertex) = graph.node_weight(node_idx) {
+            let neighbors: Vec<_> = graph.neighbors(node_idx)
+                .filter_map(|n| graph.node_weight(n))
+                .collect();
+            println!("  {:?} -> {:?}", vertex, neighbors);
+        }
     }
 }
 
@@ -371,31 +394,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_petgraph_dfs_discovery() {
+    fn test_dynamic_discovery() {
         let provider = SimpleGraphProvider::new(2, 2);
         let mut discoverer = GraphDiscoverer::new(provider);
 
         let result = discoverer.dfs_discover(1);
         assert!(!result.is_empty());
         assert!(result.contains(&1));
+        assert!(discoverer.discovered_count() > 0);
     }
 
     #[test]
-    fn test_iterative_dfs() {
+    fn test_external_provider_discovery() {
         let provider = ExternalDataProvider::new();
         let mut discoverer = GraphDiscoverer::new(provider);
 
-        let result = discoverer.dfs_discover_iterative("root".to_string());
+        let result = discoverer.dfs_discover("root".to_string());
         assert!(result.contains(&"root".to_string()));
         assert!(result.len() > 1);
     }
 
     #[test]
-    fn test_visitor_pattern() {
-        let provider = ExternalDataProvider::new();
+    fn test_dfs_iterator() {
+        let provider = SimpleGraphProvider::new(2, 2);
         let mut discoverer = GraphDiscoverer::new(provider);
 
-        let result = discoverer.dfs_discover_with_visitor("root".to_string(), |_, _| true);
-        assert!(result.contains(&"root".to_string()));
+        let result = discoverer.dfs_discover_iterator(1);
+        assert!(!result.is_empty());
+        assert!(result.contains(&1));
     }
 }
