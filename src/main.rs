@@ -233,7 +233,7 @@ where
             match event {
                 DfsEvent::Discover(node_idx, _) => {
                     if let Some(vertex) = self.dynamic_graph.get_vertex(node_idx) {
-                        discovery_order.push(vertex);
+                        discovery_order.push(vertex.clone());
                         println!("DFS discovered: {:?}", vertex);
                     }
                     Control::<()>::Continue
