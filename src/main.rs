@@ -11,7 +11,7 @@ pub trait GraphProvider<T> {
     fn get_neighbors(&mut self, vertex: &T) -> Vec<T>;
 
     /// Check if a vertex exists (optional validation)
-    fn vertex_exists(&mut self, vertex: &T) -> bool {
+    fn vertex_exists(&mut self, _vertex: &T) -> bool {
         true // Default implementation assumes all vertices exist
     }
 }
@@ -23,8 +23,12 @@ where
     P: GraphProvider<T>,
 {
     graph: RefCell<StableDiGraph<T, ()>>,
+    // mmc: why T and not &T ? cannot we share it with graph?
     vertex_to_node: RefCell<HashMap<T, NodeIndex>>,
-    discovered: RefCell<HashSet<T>>,
+    // transforming external nodes to Graph vertices.
+    // Graph provides the reverse. But why 2 copies of T?
+
+    discovered: RefCell<HashSet<T>>, // why?   discover_if_needed...have we invoked provider?
     provider: RefCell<P>,
 }
 
@@ -49,7 +53,7 @@ where
             node_idx
         } else {
             let mut graph = self.graph.borrow_mut();
-            let node_idx = graph.add_node(vertex.clone());
+            let node_idx = graph.add_node(vertex.clone()); // so 2 copies!
             vertex_to_node.insert(vertex, node_idx);
             node_idx
         }
@@ -83,6 +87,7 @@ where
         // Add neighbors to graph
         for neighbor in neighbors {
             if self.provider.borrow_mut().vertex_exists(&neighbor) {
+                // external node -> graph node
                 let neighbor_node = self.get_or_create_node(neighbor.clone());
 
                 // Add edge if it doesn't exist
@@ -218,6 +223,7 @@ where
     /// Perform DFS using petgraph's depth_first_search with dynamic discovery
     pub fn dfs_discover(&mut self, start: T) -> Vec<T> {
         let start_node = match self.dynamic_graph.add_start_vertex(start) {
+            // inside the graph.
             Some(node) => node,
             None => return Vec::new(),
         };
@@ -383,7 +389,7 @@ fn demonstrate_graph_access() {
     let mut discoverer = GraphDiscoverer::new(provider);
 
     // 1. Perform discovery
-    let discovery_order = discoverer.dfs_discover("root".to_string());
+    let discovery_order = discoverer.dfs_discover("root".to_string()); // mmc: so here T = String
     println!("Discovered: {:?}", discovery_order);
 
     // 2. Access the "snapshot" StableDiGraph (no further discovery)
