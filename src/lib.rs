@@ -199,6 +199,7 @@ where
         if !self.discovered {
             self.graph.discover_if_needed(self.node_idx);
             self.discovered = true;
+            self.inner = self.graph.graph.borrow().neighbors(self.node_idx).detach();
         }
 
         self.inner.next_node(&*self.graph.graph.borrow()) // wtf!
