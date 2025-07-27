@@ -1,9 +1,12 @@
 use petgraph::graph::{NodeIndex,DefaultIx};
 use petgraph::visit::{depth_first_search, DfsEvent, Control, IntoNeighbors, GraphBase, Visitable};
-use petgraph::stable_graph::StableDiGraph;
+use petgraph::stable_graph::{StableDiGraph};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::cell::RefCell;
+
+mod dynamic_bit_set;
+use dynamic_bit_set::DynamicBitSet;
 
 /// Trait for providing vertices and edges on demand
 pub trait GraphProvider<T> {
@@ -151,6 +154,26 @@ where
         self.graph.borrow().reset_map(map)
     }
 }
+*/
+// Implement Visitable for our wrapper with dynamic bit set
+impl<T, P> Visitable for DynamicGraph<T, P>
+where
+    T: Clone + Eq + Hash + std::fmt::Debug,
+    P: GraphProvider<T>,
+{
+    type Map = DynamicBitSet;
+
+    fn visit_map(&self) -> Self::Map {
+        // Create a bit set with current graph capacity
+        DynamicBitSet::with_capacity(self.graph.borrow().node_count())
+    }
+
+    fn reset_map(&self, map: &mut Self::Map) {
+        map.reset();
+    }
+}
+
+
 
 // Custom neighbors iterator that triggers discovery
 pub struct DynamicNeighbors<'a, T, P>
