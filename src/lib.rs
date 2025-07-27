@@ -4,6 +4,7 @@ use petgraph::stable_graph::{StableDiGraph};
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::cell::RefCell;
+use tracing::debug;
 
 mod dynamic_bit_set;
 use dynamic_bit_set::DynamicBitSet;
@@ -85,7 +86,6 @@ where
         // Mark as discovered
         self.discovered.borrow_mut().insert(vertex.clone());
 
-        println!("Dynamically discovering vertex {:?} with {} neighbors", vertex, neighbors.len());
 
         // Add neighbors to graph
         for neighbor in neighbors {
@@ -260,21 +260,21 @@ where
                 DfsEvent::Discover(node_idx, _) => {
                     if let Some(vertex) = self.dynamic_graph.get_vertex(node_idx) {
                         discovery_order.push(vertex.clone());
-                        println!("DFS discovered: {:?}", vertex);
+                        debug!("DFS discovered: {:?}", vertex);
                     }
                     Control::<()>::Continue
                 },
                 DfsEvent::TreeEdge(from, to) => {
                     if let (Some(from_vertex), Some(to_vertex)) =
                         (self.dynamic_graph.get_vertex(from), self.dynamic_graph.get_vertex(to)) {
-                        println!("DFS tree edge: {:?} -> {:?}", from_vertex, to_vertex);
+                            debug!("DFS tree edge: {:?} -> {:?}", from_vertex, to_vertex);
                     }
                     Control::Continue
                 },
                 DfsEvent::BackEdge(from, to) => {
                     if let (Some(from_vertex), Some(to_vertex)) =
                         (self.dynamic_graph.get_vertex(from), self.dynamic_graph.get_vertex(to)) {
-                        println!("DFS back edge: {:?} -> {:?}", from_vertex, to_vertex);
+                        debug!("DFS back edge: {:?} -> {:?}", from_vertex, to_vertex);
                     }
                     Control::Continue
                 },
