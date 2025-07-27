@@ -86,6 +86,7 @@ where
         // Mark as discovered
         self.discovered.borrow_mut().insert(vertex.clone());
 
+        // eprintln!("Dynamically discovering vertex {:?} with {} neighbors", vertex, neighbors.len());
 
         // Add neighbors to graph
         for neighbor in neighbors {
@@ -96,6 +97,7 @@ where
                 // Add edge if it doesn't exist
                 let mut graph = self.graph.borrow_mut();
                 if graph.find_edge(node_idx, neighbor_node).is_none() {
+                    // eprintln!("Dynamically adding edge");
                     graph.add_edge(node_idx, neighbor_node, ());
                 }
             }
@@ -138,16 +140,21 @@ where
     type EdgeId = petgraph::graph::EdgeIndex;
 }
 
+// mmc: IntoNeighbors + Visitable
 // Implement Visitable for our wrapper
+/*
 impl<T, P> Visitable for DynamicGraph<T, P>
 where
     T: Clone + Eq + Hash + std::fmt::Debug,
     P: GraphProvider<T>,
 {
+    // must by dynamic too!
     type Map = <StableDiGraph<T, ()> as Visitable>::Map;
 
+    // fixme: I need to grow it on demand!
     fn visit_map(&self) -> Self::Map {
         self.graph.borrow().visit_map()
+            // mmc: I need dynamic one!
     }
 
     fn reset_map(&self, map: &mut Self::Map) {
@@ -199,6 +206,8 @@ where
         if !self.discovered {
             self.graph.discover_if_needed(self.node_idx);
             self.discovered = true;
+
+            //
             self.inner = self.graph.graph.borrow().neighbors(self.node_idx).detach();
         }
 
@@ -283,6 +292,7 @@ where
                         debug!("finished with {:?}", vertex);
                         discovery_order.push(vertex.clone());
                     }
+                    // self.dynamic_graph.graph.borrow().node_weight(node_idx));
                     Control::Continue
                 },
                 _ => Control::Continue,
@@ -348,6 +358,8 @@ where
 }
 
 
+// mod simple {
+// fixme: for testing only!
 // Example implementation of GraphProvider for a simple numeric graph
 pub struct SimpleGraphProvider {
     max_depth: usize,
