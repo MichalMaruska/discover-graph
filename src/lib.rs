@@ -259,7 +259,6 @@ where
             match event {
                 DfsEvent::Discover(node_idx, _) => {
                     if let Some(vertex) = self.dynamic_graph.get_vertex(node_idx) {
-                        discovery_order.push(vertex.clone());
                         debug!("DFS discovered: {:?}", vertex);
                     }
                     Control::<()>::Continue
@@ -275,6 +274,13 @@ where
                     if let (Some(from_vertex), Some(to_vertex)) =
                         (self.dynamic_graph.get_vertex(from), self.dynamic_graph.get_vertex(to)) {
                         debug!("DFS back edge: {:?} -> {:?}", from_vertex, to_vertex);
+                    }
+                    Control::Continue
+                },
+                DfsEvent::Finish(node_idx, _) => {
+                    if let Some(vertex) = self.dynamic_graph.get_vertex(node_idx) {
+                        debug!("finished with {:?}", vertex);
+                        discovery_order.push(vertex.clone());
                     }
                     Control::Continue
                 },
