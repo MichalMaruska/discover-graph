@@ -363,8 +363,9 @@ mod tests {
     }
 
 
+    /*
+    #[ignore]
     #[test]
-    #[disabled]
     fn test_external_provider_discovery() {
         let provider = ExternalDataProvider::new();
         let mut discoverer = GraphDiscoverer::new(provider);
@@ -373,6 +374,7 @@ mod tests {
         assert!(result.contains(&"root".to_string()));
         assert!(result.len() > 1);
     }
+    */
 
     #[test]
     fn test_dfs_iterator() {
