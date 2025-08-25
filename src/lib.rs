@@ -130,7 +130,7 @@ where
     }
 
 
-    pub fn get_provider(self) -> (P,HashMap<T, NodeIndex>) {
+    pub fn get_provider(self) -> (P, HashMap<T, NodeIndex>) {
         // Ref<'_, T>
         return (
             self.dynamic_graph.provider.into_inner(),
