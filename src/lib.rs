@@ -336,6 +336,16 @@ where
         self.dynamic_graph.get_graph_snapshot()
     }
 
+
+    pub fn get_provider(self) -> (P,HashMap<T, NodeIndex>) {
+        // Ref<'_, T>
+        return (
+            self.dynamic_graph.provider.into_inner(),
+            self.dynamic_graph.vertex_to_node.into_inner()
+        )
+    }
+
+
     /// Get access to the dynamic wrapper (for further discovery operations)
     pub fn get_dynamic_graph(&self) -> &DynamicGraph<T, P> {
         &self.dynamic_graph
