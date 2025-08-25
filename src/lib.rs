@@ -64,7 +64,7 @@ where
                     if let Some(vertex) = self.dynamic_graph.get_vertex(node_idx) {
                         debug!("DFS discovered: {:?}", vertex);
                     }
-                    Control::<()>::Continue
+                    Control::<()>::Continue // too bad not default for that B type.
                 },
                 DfsEvent::TreeEdge(from, to) => {
                     if let (Some(from_vertex), Some(to_vertex)) =
