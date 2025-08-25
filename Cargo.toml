@@ -7,3 +7,11 @@ edition = "2024"
 fixedbitset = "0.5.7"
 petgraph = "0.8.2"
 tracing = "0.1.41"
+
+
+# Debian https://wiki.debian.org/Rust
+[source]
+[source.debian-packages]
+directory = "/usr/share/cargo/registry"
+[source.crates-io]
+replace-with = "debian-packages"
